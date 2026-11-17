@@ -1,0 +1,5 @@
+# Optional: only needed for real webcam capture and preview.
+# The complete simulated fleet demo uses the Python standard library.
+opencv-python>=4.10,<5
+Pillow>=10.4,<13
+mediapipe==1.0.1
