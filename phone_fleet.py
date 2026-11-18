@@ -20,7 +20,7 @@ from http.server import ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from fleet.network import ApiClient
-from fleet.face_preview import FacePreview, behavior_label
+from fleet.face_preview import FacePreview, behavior_label, classifier_summary
 from fleet.face_activity import FaceActivity
 from fleet.owner_ui import OwnerApp
 from fleet.phone_speed import PhoneHandler, PhoneSpeed
@@ -28,6 +28,35 @@ from fleet.risk import Measurements, RiskEngine
 from fleet.server import FleetServer
 from fleet.storage import Store, utc_now
 from main import PROJECT_DIR, load_config
+
+
+def apply_vehicle_speed(readings, data):
+    if "manual_speed" in data:
+        speed = data["manual_speed"]
+        if type(speed) is not int or not 0 <= speed <= 120:
+            raise ValueError("Manual speed must be a whole number from 0 to 120 km/h.")
+        readings.speed = speed
+        readings.motion_source = "simulation"
+        readings.speed_method = "Manual demo"
+        return
+
+    gps = PhoneSpeed()
+    if data.get("gps"):
+        try:
+            fix = data["gps"]
+            gps_age = data["captured"] - fix["timestamp"]
+            gps.accept({**fix, "timestamp": time.time() - gps_age - max(0, time.monotonic() - data["server_capture"])})
+        except ValueError:
+            pass  # An old fix is equivalent to missing speed.
+    gps.apply(readings)
+    missing = readings.assessment_note.startswith(("Phone GPS", "Waiting for phone GPS"))
+    readings.speed_method = "unavailable" if missing else ("GPS estimate" if fix.get("estimated") else "GPS")
+    if missing:
+        messages = {"denied": "Allow precise location for this site in the phone browser.",
+                    "timeout": "GPS timed out. Try outdoors with precise location enabled.",
+                    "unavailable": "Location unavailable. Check phone location settings.",
+                    "estimating": "Waiting for sufficiently accurate movement to estimate speed."}
+        readings.assessment_note = messages.get(data.get("gps_status"), readings.assessment_note)
 
 
 class VehicleLink:
@@ -64,23 +93,7 @@ class VehicleLink:
             self.face_activity.observe(frame, readings)
             if time.monotonic() - data["server_capture"] > 5:
                 raise ValueError("Processing took too long. Waiting for the next frame.")
-            gps = PhoneSpeed()
-            if data.get("gps"):
-                try:
-                    fix = data["gps"]
-                    gps_age = data["captured"] - fix["timestamp"]
-                    gps.accept({**fix, "timestamp": time.time() - gps_age - max(0, time.monotonic() - data["server_capture"])})
-                except ValueError:
-                    pass  # An old fix is equivalent to missing speed.
-            gps.apply(readings)
-            missing = readings.assessment_note.startswith(("Phone GPS", "Waiting for phone GPS"))
-            readings.speed_method = "unavailable" if missing else ("GPS estimate" if fix.get("estimated") else "GPS")
-            if missing:
-                messages = {"denied": "Allow precise location for this site in the phone browser.",
-                            "timeout": "GPS timed out. Try outdoors with precise location enabled.",
-                            "unavailable": "Location unavailable. Check phone location settings.",
-                            "estimating": "Waiting for sufficiently accurate movement to estimate speed."}
-                readings.assessment_note = messages.get(data.get("gps_status"), readings.assessment_note)
+            apply_vehicle_speed(readings, data)
             readings.accelerometer = data.get("accelerometer")
             readings.gyroscope = data.get("gyroscope")
             readings = Measurements.from_dict(readings.to_dict())
@@ -101,17 +114,20 @@ class VehicleLink:
             return {"driver": trip["driver_name"], "route": trip["route_name"],
                     "mount_note": self.face_activity.mount_note,
                     "calibration_id": self.face_activity.calibration_id,
-                    "label": behavior_label(readings.behavior, readings.confidence, readings.face_activity),
+                    "label": behavior_label(readings.behavior, readings.confidence, readings.face_activity, readings.handset_visible),
                     "behavior": readings.behavior, "confidence": readings.confidence,
+                    "raw_label": readings.classifier_label, "raw_score": readings.classifier_score,
+                    "prediction": classifier_summary(readings.classifier_label, readings.classifier_score, readings.handset_visible),
+                    "handset": readings.handset_visible,
                     "risk": risk.level, "reason": risk.reason,
                     "trip_id": trip["id"], "speed_method": readings.speed_method,
-                    "speed": None if missing else readings.speed}
+                    "speed": None if readings.speed_method == "unavailable" else readings.speed}
 
 
 class MobileHandler(PhoneHandler):
     def do_GET(self):
         if self.path == "/version":
-            return self.respond(200, b'{"mobile":5}', "application/json")
+            return self.respond(200, b'{"mobile":6}', "application/json")
         if self.path == "/clock":
             return self.respond(200, json.dumps(time.monotonic()).encode(), "application/json")
         if urlsplit(self.path).path != "/":

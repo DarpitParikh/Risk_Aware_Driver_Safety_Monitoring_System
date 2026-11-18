@@ -13,10 +13,16 @@ class FaceActivity:
         options = vision.FaceLandmarkerOptions(base_options=BaseOptions(model_asset_path=str(path)),
             output_face_blendshapes=True, output_facial_transformation_matrixes=True)
         self.model = vision.FaceLandmarker.create_from_options(options)
+        hand_options = vision.HandLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=str(path.with_name("hand_landmarker.task"))),
+            num_hands=2)
+        self.hands = vision.HandLandmarker.create_from_options(hand_options)
         self.mp = mp
         self.reset_mount()
 
     def reset_mount(self):
+        self.call_since = None
+        self.last_call_pose = None
         self.forward_yaw = None
         self.samples = []
         self.calibrating = False
@@ -48,14 +54,40 @@ class FaceActivity:
 
     def close(self):
         self.model.close()
+        self.hands.close()
+
+    def sustained_call_pose(self, near_ear, now):
+        if not near_ear:
+            self.call_since = self.last_call_pose = None
+            return False
+        if self.last_call_pose is None or now - self.last_call_pose > 2:
+            self.call_since = now
+        self.last_call_pose = now
+        return now - self.call_since >= 1.25
+
+    @staticmethod
+    def hand_near_ear(face, hands, width, height):
+        # Face landmarks 234 and 454 lie on opposite sides of the face.
+        def point(mark):
+            return (mark.x * width, mark.y * height)
+        sides = [point(face[i]) for i in (234, 454)]
+        radius = .4 * math.dist(*sides)
+        for hand in hands:
+            for side in sides:
+                nearby = sum(math.dist(point(hand[i]), side) <= radius for i in (5, 6, 9, 10, 13, 14, 17, 18))
+                if nearby >= 3:
+                    return True
+        return False
 
     def observe(self, jpeg, readings):
         import cv2
         import numpy as np
         frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        result = self.model.detect(self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb))
+        image = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb)
+        result = self.model.detect(image)
         if not result.face_blendshapes or not result.facial_transformation_matrixes:
+            self.sustained_call_pose(False, time.monotonic())
             if self.calibrating:
                 self.samples.clear()
                 self.mount_note = "Face unavailable. Adjust the mount so the camera sees both eyes."
@@ -69,6 +101,15 @@ class FaceActivity:
             self.mount_note = f"Look at the road and hold still ({len(self.samples)}/5)"
         self.resolve_turn(readings, yaw)
         self.apply(readings, scores["eyeBlinkLeft"], scores["eyeBlinkRight"], yaw)
+        candidate = (readings.classifier_label == "talking_phone" and readings.classifier_score >= .90
+                     and readings.handset_visible is False)
+        near_ear = False
+        if candidate:
+            hands = self.hands.detect(image).hand_landmarks
+            near_ear = self.hand_near_ear(result.face_landmarks[0], hands, rgb.shape[1], rgb.shape[0])
+        if self.sustained_call_pose(near_ear, time.monotonic()):
+            # Display a possible call. This evidence does not confirm phone use.
+            readings.behavior = "possible_call"
 
     def resolve_turn(self, readings, yaw):
         # The image classifier sees camera-relative turns. Once calibrated,

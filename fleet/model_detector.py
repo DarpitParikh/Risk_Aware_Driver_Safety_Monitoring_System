@@ -111,7 +111,7 @@ class TrainedDetector(Detector):
         self.model.eval()
         self.phone_detector = None
 
-    def handset_visible(self, rgb):
+    def handset_visible(self, rgb, check_texting_region=False):
         """Check the same camera frame for a COCO cell-phone object."""
         from torchvision.models.detection import ssdlite320_mobilenet_v3_large, SSDLite320_MobileNet_V3_Large_Weights
         from torchvision.transforms.functional import to_tensor
@@ -120,9 +120,29 @@ class TrainedDetector(Detector):
             detector.load_state_dict(self.torch.load(PHONE_WEIGHTS, map_location="cpu", weights_only=True))
             self.phone_detector = detector.eval()
         phone_class = SSDLite320_MobileNet_V3_Large_Weights.DEFAULT.meta["categories"].index("cell phone")
+        def best_phone(objects):
+            scores = objects["scores"][objects["labels"] == phone_class]
+            return scores.max().item() if scores.numel() else 0
+
         with self.torch.inference_mode():
-            objects = self.phone_detector([to_tensor(rgb)])[0]
-        return bool(((objects["labels"] == phone_class) & (objects["scores"] >= 0.5)).any())
+            score = best_phone(self.phone_detector([to_tensor(rgb)])[0])
+            if score >= .5:
+                return True
+            if score < .10:
+                if not check_texting_region:
+                    return False
+                # A handset held by the wheel or lap may occupy few pixels in
+                # the full view. Check one enlarged lower-centre crop.
+                width, height = rgb.size
+                lower = rgb.crop((width//6,height//3,width-width//6,height))
+                return best_phone(self.phone_detector([to_tensor(lower)])[0]) >= .5
+            # Zoom into overlapping regions if the first pass sees a possible
+            # small handset. Crops still need the full confirmation threshold.
+            width, height = rgb.size
+            w, h = max(1, round(width*.6)), max(1, round(height*.6))
+            crops = [to_tensor(rgb.crop((x,y,x+w,y+h)))
+                     for x in (0,width-w) for y in (0,height-h)]
+            return any(best_phone(objects) >= .5 for objects in self.phone_detector(crops))
 
     def read(self, frame=None):
         """Accept an OpenCV BGR frame. Resize and normalize exactly as in Colab."""
@@ -137,7 +157,12 @@ class TrainedDetector(Detector):
             scores = self.model(tensor).softmax(dim=1)[0]
         confidence, index = scores.max(dim=0)
         readings = prediction_to_readings(self.classes[index.item()], confidence.item(), threshold=self.threshold)
-        if readings.phone_use and not self.handset_visible(rgb):
+        readings.classifier_label = readings.behavior
+        readings.classifier_score = readings.confidence
+        texting_index = self.classes.index("texting_phone")
+        # Include plausible second-choice texting predictions in the extra check.
+        readings.handset_visible = self.handset_visible(rgb, scores[texting_index].item() >= .15)
+        if readings.phone_use and not readings.handset_visible:
             readings.phone_use = False
             readings.behavior = "unconfirmed_activity"
             readings.assessment_available = False

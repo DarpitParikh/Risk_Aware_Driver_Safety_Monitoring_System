@@ -7,6 +7,14 @@ from fleet.risk import Measurements, RiskEngine
 
 
 class ActivityTests(unittest.TestCase):
+    def test_verified_activity_labels(self):
+        from fleet.face_preview import classifier_summary
+        self.assertIn("rejected", classifier_summary("talking_phone", .99, False))
+        self.assertEqual(behavior_label("unconfirmed_activity", 0, "Facing forward", False), "Facing forward")
+        self.assertEqual(behavior_label("other_activities", .91, "Looking aside", False), "Looking aside")
+        self.assertEqual(behavior_label("texting_phone", .85, "Looking aside", True), "Texting · Looking aside")
+        self.assertEqual(behavior_label("texting_phone", .42, "Facing forward", True), "Phone visible")
+
     def test_side_mount_uses_road_reference_for_label_and_alert(self):
         pose = FaceActivity.__new__(FaceActivity)
         pose.reset_mount()

@@ -6,6 +6,7 @@ from .attention import AttentionPolicy, SpeedContext
 
 @dataclass
 class Measurements:
+    # A visible object alone does not establish how the driver is using it.
     eyes_closed: bool = False
     yawning: bool = False
     looking_away: bool = False
@@ -25,6 +26,9 @@ class Measurements:
     # Raw phone sensor vectors, in handset coordinates.
     accelerometer: list | None = None
     gyroscope: list | None = None
+    handset_visible: bool | None = None
+    classifier_label: str = ""
+    classifier_score: float = 0.0
 
     @classmethod
     def from_dict(cls, values):
@@ -40,6 +44,13 @@ class Measurements:
         if type(face) is not bool and not (face is None and values.get("source") == "trained_model"):
             raise ValueError("Face visibility must be boolean, or unmeasured for the classifier.")
         result.face_visible = face
+        handset = values.get("handset_visible")
+        if handset is not None and type(handset) is not bool:
+            raise ValueError("Handset visibility must be boolean or unmeasured.")
+        result.handset_visible = handset
+        result.classifier_label = values.get("classifier_label", "")
+        if result.classifier_label not in ("", "safe_driving", "texting_phone", "talking_phone", "turning", "other_activities"):
+            raise ValueError("Unknown raw classifier label.")
         import math
         for name in ("accelerometer", "gyroscope"):
             vector = values.get(name)
@@ -48,7 +59,7 @@ class Measurements:
                 raise ValueError(f"Invalid {name} vector.")
             setattr(result, name, vector)
         for name, minimum, maximum in (("speed", 0, 250), ("acceleration", -20, 20),
-                                       ("confidence", 0, 1), ("inference_ms", 0, 600_000)):
+                                       ("confidence", 0, 1), ("classifier_score", 0, 1), ("inference_ms", 0, 600_000)):
             value = values.get(name, 0)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not minimum <= value <= maximum:
                 raise ValueError(f"{name} must be between {minimum} and {maximum}.")
@@ -60,12 +71,12 @@ class Measurements:
             raise ValueError("Unknown motion source.")
         result.motion_source = values.get("motion_source", "simulation")
         result.speed_method = values.get("speed_method", "")
-        if result.speed_method not in ("", "GPS", "GPS estimate", "unavailable"):
+        if result.speed_method not in ("", "GPS", "GPS estimate", "unavailable", "Manual demo"):
             raise ValueError("Unknown speed measurement method.")
         if result.motion_source == "phone_gps" and result.acceleration != 0:
             raise ValueError("Phone GPS does not measure acceleration in this version.")
         behavior = values.get("behavior", "")
-        if behavior not in ("", "safe_driving", "talking_phone", "texting_phone", "turning", "other_activities", "unconfirmed_activity"):
+        if behavior not in ("", "safe_driving", "talking_phone", "texting_phone", "turning", "other_activities", "unconfirmed_activity", "possible_call"):
             raise ValueError("Unknown behavior class.")
         result.behavior = behavior
         note = values.get("assessment_note", "")

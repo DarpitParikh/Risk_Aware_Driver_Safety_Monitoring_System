@@ -7,13 +7,30 @@ import time
 from .model_detector import DEFAULT_THRESHOLD
 
 
-def behavior_label(behavior, confidence, face_activity=""):
+def classifier_summary(label, score, handset_visible=None):
+    names = {"safe_driving": "Normal driving", "turning": "Turning",
+             "texting_phone": "Texting", "talking_phone": "Talking on phone",
+             "other_activities": "Other activity"}
+    if label not in names:
+        return ""
+    if label in ("talking_phone", "texting_phone") and handset_visible is False:
+        return "Phone-use prediction rejected · no handset detected"
+    return names[label] + (" (uncertain)" if score < DEFAULT_THRESHOLD else "")
+
+
+def behavior_label(behavior, confidence, face_activity="", handset_visible=None):
     labels = {"safe_driving": "Normal driving", "turning": "Looking aside",
               "texting_phone": "Texting", "talking_phone": "Talking on phone",
               "other_activities": "Other activity"}
     if face_activity == "Eyes closed":
         return face_activity
-    if face_activity == "Looking aside" and behavior not in ("talking_phone", "texting_phone"):
+    if behavior == "possible_call":
+        return "Possible call · Looking aside" if face_activity == "Looking aside" else "Possible call"
+    if handset_visible and (behavior not in ("talking_phone", "texting_phone") or confidence < DEFAULT_THRESHOLD):
+        return "Phone visible · Looking aside" if face_activity == "Looking aside" else "Phone visible"
+    if face_activity == "Looking aside":
+        if behavior in ("talking_phone", "texting_phone") and handset_visible and confidence >= DEFAULT_THRESHOLD:
+            return labels[behavior] + " · Looking aside"
         return face_activity
     if not behavior:
         return "Waiting for camera"
