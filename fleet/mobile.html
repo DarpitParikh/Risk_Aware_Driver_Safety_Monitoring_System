@@ -35,7 +35,7 @@ footer{margin-top:18px}button{border:1px solid #526269;border-radius:12px;paddin
 const video=document.querySelector('video'), statusBox=document.querySelector('output');
 const start=document.querySelector('#start'), stop=document.querySelector('#stop');
 const canvas=document.createElement('canvas'), token=location.hash.slice(1);
-let generation=0, watch=null, stream=null, audio=null, gps=null, motion=null, lastAlarm=0;
+let generation=0, watch=null, stream=null, audio=null, gps=null, motion=null, alarm=null;
 const manualMode=document.querySelector('#manualMode'), demoSpeed=document.querySelector('#demoSpeed');
 manualMode.checked=false;
 manualMode.onchange=()=>{document.querySelector('#speedControls').hidden=!manualMode.checked;};
@@ -164,6 +164,7 @@ function end(){
   if(watch!==null)navigator.geolocation.clearWatch(watch);
   if(stream)stream.getTracks().forEach(track=>track.stop());
   window.removeEventListener('devicemotion',readMotion);
+  setAlarm(false);
   if(audio)audio.close().catch(()=>{});
   watch=null;stream=null;gps=null;motion=null;audio=null;video.srcObject=null;
   field('sensorDetails').textContent='Sensors stopped';
@@ -171,10 +172,24 @@ function end(){
   start.disabled=false;stop.disabled=true;statusBox.textContent='Stopped';
   offset=null;assessment('—',null);field('cameraState').textContent='Off';field('connection').textContent='Standby';field('trip').textContent='Monitoring ended';
 }
-function beep(){
-  const tone=audio.createOscillator(),gain=audio.createGain();
-  tone.frequency.value=750;gain.gain.value=.18;tone.connect(gain);gain.connect(audio.destination);
-  tone.start();tone.stop(audio.currentTime+.45);
+function setAlarm(active){
+  if(!active){
+    if(alarm){alarm.stop();alarm.disconnect();alarm=null;}
+    return;
+  }
+  if(alarm || !audio)return;
+  const rate=16000, half=rate/4;
+  const warning=audio.createBuffer(1,half*2,rate);
+  const samples=warning.getChannelData(0);
+  for(let i=0;i<half;i++){
+    samples[i]=.32*Math.sin(2*Math.PI*880*i/rate);
+    samples[i+half]=.32*Math.sin(2*Math.PI*1320*i/rate);
+  }
+  alarm=audio.createBufferSource();
+  alarm.buffer=warning;
+  alarm.loop=true;
+  alarm.connect(audio.destination);
+  alarm.start();
 }
 async function send(id){
   if(id!==generation)return;
@@ -214,20 +229,22 @@ async function send(id){
       report.speed===0?(report.speed_method==='GPS estimate'?'Appears stationary':'Stopped'):'No active alert';
     reviewedFrame=packet.jpeg;field('example').disabled=false;
     field('sensorDetails').textContent=gpsDetail()+' · Raw model guess: '+(report.raw_label||report.behavior).replaceAll('_',' ')+' (score '+(report.raw_score??report.confidence).toFixed(2)+') · Handset: '+(report.handset?'detected':'unconfirmed');
-    if(report.risk==='HIGH' && Date.now()-lastAlarm>=10000){beep();lastAlarm=Date.now();}
-    if(report.risk!=='HIGH')lastAlarm=0;
-  }catch(error){if(id===generation){offset=null;assessment('UNKNOWN',null);field('modelPrediction').hidden=true;field('connection').textContent='Retrying';statusBox.textContent=error.message;}}
+    setAlarm(report.risk==='HIGH');
+  }catch(error){if(id===generation){setAlarm(false);offset=null;assessment('UNKNOWN',null);field('modelPrediction').hidden=true;field('connection').textContent='Retrying';statusBox.textContent=error.message;}}
   if(id===generation)setTimeout(()=>send(id),550);
 }
 start.onclick=async()=>{
   const id=++generation;start.disabled=true;stop.disabled=false;
   try{
     if(!token)throw Error('Open your vehicle link from the manager.');
+    audio=new AudioContext();
+    await audio.resume();
+    if(id!==generation)return;
     const version=await fetch('/version',{cache:'no-store',signal:AbortSignal.timeout(4000)});
     if(!version.ok || (await version.json()).mobile!==6)
       throw Error('Close the manager windows on the PC, restart Start Phone Fleet, then open the newly copied vehicle link.');
     statusBox.textContent='Allow camera, location and motion access.';
-    audio=new AudioContext();await audio.resume();
+    if(id!==generation)return;
     if(window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission==='function')
       await DeviceMotionEvent.requestPermission();
     if(id!==generation)return;

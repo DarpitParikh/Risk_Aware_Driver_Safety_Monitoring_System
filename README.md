@@ -37,7 +37,7 @@ The demo uses `data/demo-fleet.sqlite3`. The normal server uses `data/fleet.sqli
 5. Uncheck **Face visible** to demonstrate UNKNOWN instead of falsely reporting safe.
 6. Set speed to zero to demonstrate suppression of motion-related warnings.
 
-Use **Test sound** to check the operating system's alert volume. Automatic sound is enabled by default, plays at HIGH risk, and repeats at most every ten seconds during a continuous HIGH episode. A new HIGH episode can sound immediately.
+Use **Test sound** to preview the driver warning. Audible warnings are enabled by default. The warning starts at HIGH risk and loops until the risk drops or monitoring ends. Windows and the phone browser use an alternating two-tone alarm.
 
 Use **Compact view** in the driver window to hide the simulator controls and keep a smaller monitoring window.
 

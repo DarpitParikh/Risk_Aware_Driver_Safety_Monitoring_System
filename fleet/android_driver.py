@@ -13,6 +13,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from .device import DeviceSession
+from .driver_alarm import DriverAlarm
 from .model_detector import unavailable_readings
 from .network import ApiClient, ApiError
 from .phone_speed import PhoneSpeed
@@ -75,7 +76,7 @@ class PhoneDriver:
         self.stop = threading.Event()
         self.messages = queue.Queue()
         self.last_frame = None
-        self.last_alarm = 0
+        self.alarm = DriverAlarm(root)
         root.title("Fleet Guardian • Driver")
         panel = ttk.Frame(root, padding=16)
         panel.pack(fill="both", expand=True)
@@ -133,9 +134,7 @@ class PhoneDriver:
         risk = self.session.evaluate(readings, gap)
         speed = "GPS unavailable" if "GPS" in readings.assessment_note else f"{readings.speed:.1f} km/h"
         text = f"{risk.level}   {speed}\n{readings.behavior.replace('_', ' ')}\n{risk.reason}"
-        alarm = risk.level == "HIGH" and time.monotonic() - self.last_alarm >= 10
-        if alarm:
-            self.last_alarm = time.monotonic()
+        alarm = risk.level == "HIGH"
         self.messages.put((f"{trip['driver_name']} • {trip['route_name']}", text, alarm))
 
     def refresh(self):
@@ -143,12 +142,12 @@ class PhoneDriver:
             trip, state, alarm = self.messages.get_nowait()
             self.assignment.configure(text=trip)
             self.status.configure(text=state)
-            if alarm:
-                self.root.bell()
+            if alarm and not self.alarm.active:
                 try:
                     subprocess.Popen(["termux-tts-speak", "Driver safety warning"])
                 except OSError:
                     logging.warning("Android speech unavailable")
+            self.alarm.set_active(alarm)
         self.root.after(200, self.refresh)
 
     def close(self):

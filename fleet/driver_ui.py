@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from .detectors import ManualDetector
+from .driver_alarm import DriverAlarm
 from .model_detector import DEFAULT_MODEL, LatestObservation, TrainedDetector
 from .network import ApiError
 from .risk import Measurements
@@ -32,8 +33,9 @@ class DriverApp:
         self.events = queue.Queue(maxsize=20)
         self.last_tick = time.monotonic()
         self.last_prediction_time = None
-        self.last_sound = -100.0
-        self.last_level = "LOW"
+        self.alarm = DriverAlarm(root)
+        self.high_risk = False
+        self.sound_test = None
         root.title(f"Fleet Guardian • Vehicle {session.vehicle_id}")
         root.geometry("650x940")
         root.minsize(610, 620)
@@ -70,7 +72,7 @@ class DriverApp:
         self.camera_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(options, text="Camera", variable=self.camera_var, command=self.toggle_camera).pack(side="left")
         self.sound_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(options, text="Audible warnings", variable=self.sound_var).pack(side="left", padx=14)
+        ttk.Checkbutton(options, text="Audible warnings", variable=self.sound_var, command=self.update_alarm).pack(side="left", padx=14)
         ttk.Button(options, text="Test sound", command=self.play_sound).pack(side="right")
         model_options = ttk.Frame(panel)
         model_options.pack(fill="x", pady=4)
@@ -291,11 +293,11 @@ class DriverApp:
             risk = self.session.evaluate(readings, elapsed)
             self.risk_label.configure(text=f"{risk.level}  •  {risk.score}/100", bg=COLORS[risk.level])
             self.reason.configure(text=risk.reason)
-            if risk.level == "HIGH" and self.sound_var.get() and (self.last_level != "HIGH" or now - self.last_sound >= 10):
-                self.play_sound()
-                self.last_sound = now
-            self.last_level = risk.level
+            self.high_risk = risk.level == "HIGH"
+            self.update_alarm()
         except (OSError, ValueError) as error:
+            self.high_risk = False
+            self.update_alarm()
             self.reason.configure(text="Could not save local reading: " + str(error))
         self.last_tick = now
         trip = self.session.current_trip()
@@ -329,11 +331,17 @@ class DriverApp:
         self.root.after(500, self.tick)
 
     def play_sound(self):
-        try:
-            import winsound
-            winsound.MessageBeep(winsound.MB_ICONHAND)
-        except (ImportError, RuntimeError):
-            self.root.bell()
+        if self.sound_test is not None:
+            self.root.after_cancel(self.sound_test)
+        self.sound_test = self.root.after(1000, self.finish_sound_test)
+        self.update_alarm()
+
+    def finish_sound_test(self):
+        self.sound_test = None
+        self.update_alarm()
+
+    def update_alarm(self):
+        self.alarm.set_active(self.sound_test is not None or (self.high_risk and self.sound_var.get()))
 
     def close(self):
         self.stop.set()
